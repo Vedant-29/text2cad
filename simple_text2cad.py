@@ -80,11 +80,16 @@ def generate_step_file(model, text_prompt, output_path, device):
         )
         
         # Save as STEP file
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        cad_sequence.save_stp("generated_model", os.path.dirname(output_path))
+        output_dir = os.path.dirname(output_path)
+        if output_dir:  # Only create directory if there's a directory component
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            output_dir = "."  # Use current directory if no directory specified
+        
+        cad_sequence.save_stp("generated_model", output_dir)
         
         # Rename to desired output path
-        generated_file = os.path.join(os.path.dirname(output_path), "generated_model.step")
+        generated_file = os.path.join(output_dir, "generated_model.step")
         if os.path.exists(generated_file):
             os.rename(generated_file, output_path)
             print(f"✅ STEP file saved to: {output_path}")
