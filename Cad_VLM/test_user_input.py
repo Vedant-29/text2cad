@@ -185,6 +185,7 @@ def test_model(
 
     model.eval()
     batch_size=min(config["test"]["batch_size"], num_texts)
+    t2clogger.info(f"Batch size: {batch_size}")
     with torch.no_grad():
         t2clogger.info("Generating CAD Sequence.")
         for b in range(num_texts // batch_size):
