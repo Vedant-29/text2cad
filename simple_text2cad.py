@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Simple Text2CAD Script - Generate STEP files from text prompts
-No web interface, no complex setup - just text to STEP files.
+Simple Text2CAD Server - Generate STEP files from text prompts via API
 """
 
 import os
 import sys
-import argparse
 import torch
 import yaml
+import tempfile
+import logging
+from datetime import datetime
+from flask import Flask, request, jsonify, send_file
 
 # Add necessary paths
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +21,17 @@ sys.path.append(os.path.join(current_dir, "CadSeqProc"))
 from Cad_VLM.models.text2cad import Text2CAD
 from CadSeqProc.utility.macro import MAX_CAD_SEQUENCE_LENGTH, N_BIT
 from CadSeqProc.cad_sequence import CADSequence
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Global model variable
+model = None
+device = None
 
 
 def load_model(config_path, device):
@@ -39,7 +52,7 @@ def load_model(config_path, device):
     # Load checkpoint if available
     if config["test"]["checkpoint_path"] is not None:
         checkpoint_file = config["test"]["checkpoint_path"]
-        print(f"Loading checkpoint: {checkpoint_file}")
+        logger.info(f"Loading checkpoint: {checkpoint_file}")
         
         checkpoint = torch.load(checkpoint_file, map_location=device)
         pretrained_dict = {}
@@ -59,7 +72,7 @@ def load_model(config_path, device):
 
 def generate_step_file(model, text_prompt, output_path, device):
     """Generate STEP file from text prompt"""
-    print(f"Generating CAD model for: '{text_prompt}'")
+    logger.info(f"Generating CAD model for: '{text_prompt}'")
     
     # Generate CAD sequence
     with torch.no_grad():
@@ -92,52 +105,118 @@ def generate_step_file(model, text_prompt, output_path, device):
         generated_file = os.path.join(output_dir, "generated_model.step")
         if os.path.exists(generated_file):
             os.rename(generated_file, output_path)
-            print(f"✅ STEP file saved to: {output_path}")
+            logger.info(f"✅ STEP file saved to: {output_path}")
             return True
         else:
-            print("❌ Failed to generate STEP file")
+            logger.error("❌ Failed to generate STEP file")
             return False
             
     except Exception as e:
-        print(f"❌ Error generating CAD model: {e}")
+        logger.error(f"❌ Error generating CAD model: {e}")
         return False
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate STEP files from text prompts")
-    parser.add_argument("--prompt", type=str, required=True, 
-                       help="Text prompt describing the CAD model")
-    parser.add_argument("--output", type=str, default="output.step", 
-                       help="Output STEP file path (default: output.step)")
-    parser.add_argument("--config", type=str, 
-                       default="Cad_VLM/config/inference_user_input.yaml",
-                       help="Config file path")
-    parser.add_argument("--device", type=str, default="auto",
-                       help="Device to use (cuda/cpu/auto)")
-    
-    args = parser.parse_args()
+def initialize_model():
+    """Initialize the model on server startup"""
+    global model, device
     
     # Determine device
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-    
-    print(f"Using device: {device}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
     
     # Load model
+    config_path = os.path.join(current_dir, "Cad_VLM/config/inference_user_input.yaml")
     try:
-        model = load_model(args.config, device)
-        print("✅ Model loaded successfully")
+        model = load_model(config_path, device)
+        logger.info("✅ Model loaded successfully")
+        return True
     except Exception as e:
-        print(f"❌ Failed to load model: {e}")
-        return 1
+        logger.error(f"❌ Failed to load model: {e}")
+        return False
+
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy", 
+        "service": "Simple Text2CAD API",
+        "model_loaded": model is not None
+    })
+
+
+@app.route('/generate-cad', methods=['POST'])
+def generate_cad():
+    """
+    Generate CAD model from text prompt
+    Expected JSON: {"prompt": "A simple cube"}
+    Returns: STEP file as attachment
+    """
+    global model, device
     
-    # Generate STEP file
-    success = generate_step_file(model, args.prompt, args.output, device)
+    # Check if model is loaded
+    if model is None:
+        logger.error("Model not loaded")
+        return jsonify({"error": "Model not loaded. Please check server startup logs."}), 500
     
-    return 0 if success else 1
+    try:
+        # Get prompt from request
+        data = request.get_json()
+        if not data or 'prompt' not in data:
+            return jsonify({"error": "Missing 'prompt' in request body"}), 400
+        
+        prompt = data['prompt'].strip()
+        if not prompt:
+            return jsonify({"error": "Empty prompt provided"}), 400
+        
+        logger.info(f"Received request to generate CAD for prompt: {prompt}")
+        
+        # Create temporary file for output
+        with tempfile.NamedTemporaryFile(suffix='.step', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
+        try:
+            # Generate STEP file
+            success = generate_step_file(model, prompt, temp_path, device)
+            
+            if not success:
+                return jsonify({"error": "Failed to generate CAD model"}), 500
+            
+            # Verify file exists and has content
+            if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                return jsonify({"error": "Generated STEP file is empty or doesn't exist"}), 500
+            
+            # Create a safe filename for download
+            safe_prompt = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_prompt = safe_prompt.replace(' ', '_')
+            if len(safe_prompt) > 50:
+                safe_prompt = safe_prompt[:50]
+            
+            download_filename = f"{safe_prompt}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.step"
+            
+            return send_file(
+                temp_path,
+                as_attachment=True,
+                download_name=download_filename,
+                mimetype='application/octet-stream'
+            )
+            
+        finally:
+            # Clean up temporary file after sending (Flask handles this automatically)
+            pass
+            
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
-    exit(main()) 
+    # Initialize model on startup
+    logger.info("Initializing Text2CAD model...")
+    if not initialize_model():
+        logger.error("Failed to initialize model. Exiting.")
+        sys.exit(1)
+    
+    # Start the Flask app
+    logger.info("Starting Simple Text2CAD API server on port 5000...")
+    app.run(host='0.0.0.0', port=5000, debug=False) 
