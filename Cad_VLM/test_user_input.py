@@ -166,10 +166,12 @@ def test_model(
 
     # Get the text prompts
     if prompt is None:
+        t2clogger.info(f"No command line prompt provided. Loading from prompt file: {config['test']['prompt_file']}")
         text = text_prompt(config["test"]["prompt_file"])
+        t2clogger.info(f"Loaded prompts from file: {text}")
     else:
         text = [prompt]
-        t2clogger.info(f"Using the user input text prompt.")
+        t2clogger.info(f"Using the user input text prompt: '{prompt}'")
 
     num_texts = len(text)
     if num_texts == 0:
@@ -177,7 +179,9 @@ def test_model(
             f'No text found in the prompt file 😥. Please check the prompt file in {config["test"]["prompt_file"]} 🔍.'
         )
     else:
-        t2clogger.info(f"Found {num_texts} prompts in the prompt file.")
+        t2clogger.info(f"Total number of prompts to process: {num_texts}")
+        for i, prompt_text in enumerate(text):
+            t2clogger.info(f"Prompt {i+1}: '{prompt_text}'")
 
     model.eval()
     batch_size=min(config["test"]["batch_size"], num_texts)
