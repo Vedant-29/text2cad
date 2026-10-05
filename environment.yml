@@ -37,3 +37,4 @@ dependencies:
         - python-dotenv
         - gradio
         - open3d
+        - flask

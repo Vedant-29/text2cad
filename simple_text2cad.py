@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
 Simple Text2CAD Server - Generate STEP files from text prompts via API
+
+Environment variables:
+    TEXT2CAD_CHECKPOINT  Path to Text2CAD_1.0.pth. Falls back to
+                         test.checkpoint_path in the inference config.
+    PORT                 Port to listen on (default 5000).
 """
 
 import os
 import sys
 import torch
 import yaml
+import io
+import shutil
 import tempfile
 import logging
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify, send_file
 
@@ -33,6 +41,11 @@ logger = logging.getLogger(__name__)
 model = None
 device = None
 
+# One generation at a time: the model and GPU are shared across requests
+generate_lock = threading.Lock()
+
+CONFIG_PATH = os.path.join(current_dir, "Cad_VLM", "config", "inference_user_input.yaml")
+
 
 def load_model(config_path, device):
     """Load the Text2CAD model"""
@@ -49,9 +62,15 @@ def load_model(config_path, device):
         cad_config=cad_config
     ).to(device)
     
-    # Load checkpoint if available
-    if config["test"]["checkpoint_path"] is not None:
-        checkpoint_file = config["test"]["checkpoint_path"]
+    # Checkpoint: TEXT2CAD_CHECKPOINT env var, else the value in the YAML config
+    checkpoint_file = os.environ.get("TEXT2CAD_CHECKPOINT") or config["test"]["checkpoint_path"]
+    if checkpoint_file is not None:
+        checkpoint_file = os.path.expanduser(checkpoint_file)
+        if not os.path.isfile(checkpoint_file):
+            raise FileNotFoundError(
+                f"Checkpoint not found at {checkpoint_file}. "
+                "Set TEXT2CAD_CHECKPOINT or test.checkpoint_path in the config."
+            )
         logger.info(f"Loading checkpoint: {checkpoint_file}")
         
         checkpoint = torch.load(checkpoint_file, map_location=device)
@@ -125,9 +144,8 @@ def initialize_model():
     logger.info(f"Using device: {device}")
     
     # Load model
-    config_path = os.path.join(current_dir, "Cad_VLM/config/inference_user_input.yaml")
     try:
-        model = load_model(config_path, device)
+        model = load_model(CONFIG_PATH, device)
         logger.info("✅ Model loaded successfully")
         return True
     except Exception as e:
@@ -171,13 +189,14 @@ def generate_cad():
         
         logger.info(f"Received request to generate CAD for prompt: {prompt}")
         
-        # Create temporary file for output
-        with tempfile.NamedTemporaryFile(suffix='.step', delete=False) as temp_file:
-            temp_path = temp_file.name
+        # Each request gets its own temporary directory, removed after reading
+        temp_dir = tempfile.mkdtemp(prefix="text2cad_")
+        temp_path = os.path.join(temp_dir, "output.step")
         
         try:
             # Generate STEP file
-            success = generate_step_file(model, prompt, temp_path, device)
+            with generate_lock:
+                success = generate_step_file(model, prompt, temp_path, device)
             
             if not success:
                 return jsonify({"error": "Failed to generate CAD model"}), 500
@@ -185,6 +204,9 @@ def generate_cad():
             # Verify file exists and has content
             if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
                 return jsonify({"error": "Generated STEP file is empty or doesn't exist"}), 500
+            
+            with open(temp_path, "rb") as f:
+                step_bytes = f.read()
             
             # Create a safe filename for download
             safe_prompt = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
@@ -195,15 +217,14 @@ def generate_cad():
             download_filename = f"{safe_prompt}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.step"
             
             return send_file(
-                temp_path,
+                io.BytesIO(step_bytes),
                 as_attachment=True,
                 download_name=download_filename,
                 mimetype='application/octet-stream'
             )
             
         finally:
-            # Clean up temporary file after sending (Flask handles this automatically)
-            pass
+            shutil.rmtree(temp_dir, ignore_errors=True)
             
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
@@ -217,6 +238,7 @@ if __name__ == "__main__":
         logger.error("Failed to initialize model. Exiting.")
         sys.exit(1)
     
-    # Start the Flask app
-    logger.info("Starting Simple Text2CAD API server on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=False) 
+    # Start the Flask app (never in debug mode: it allows remote code execution)
+    port = int(os.environ.get("PORT", "5000"))
+    logger.info(f"Starting Simple Text2CAD API server on port {port}...")
+    app.run(host='0.0.0.0', port=port, debug=False)

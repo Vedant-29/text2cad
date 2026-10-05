@@ -201,8 +201,6 @@ def test_model(
                 topk_index=TOPK,
                 device="cuda" if torch.cuda.is_available() else "cpu",
             )
-
-            t2clogger.info(f"Generated CAD Sequence for prompt {b*batch_size + i}: {pred_cad_seq_dict['cad_vec'][i]}")
             # Save the results batchwise
             for i in range(
                 len(
@@ -214,6 +212,7 @@ def test_model(
                 )
             ):
                 index = i + b * batch_size
+                t2clogger.info(f"Generated CAD Sequence for prompt {index}: {pred_cad_seq_dict['cad_vec'][i]}")
                 try:
                     CADSequence.from_vec(
                         pred_cad_seq_dict["cad_vec"][i].cpu().numpy(),

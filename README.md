@@ -1,202 +1,104 @@
-<div align="center">
+# Text2CAD
 
-# Text2CAD: Generating Sequential CAD Designs from Beginner-to-Expert Level Text Prompts
+A fork of Text2CAD that adds a small REST server. You send it a text prompt and it returns the generated CAD model as a STEP file.
 
+This is a fork of [SadilKhan/Text2CAD](https://github.com/SadilKhan/Text2CAD), the NeurIPS 2024 model by Mohammad Sadil Khan, Sankalp Sinha and colleagues at DFKI. The model, training code and data preparation are theirs and unchanged. The original README is kept as [UPSTREAM_README.md](UPSTREAM_README.md).
 
-[Mohammad Sadil Khan*](https://scholar.google.com/citations?user=XIDQo_IAAAAJ&hl=en&authuser=1) · [Sankalp Sinha*](https://scholar.google.com/citations?user=QYcfOjEAAAAJ&hl=en&authuser=1&oi=ao) · [Talha Uddin Sheikh](https://scholar.google.com/citations?hl=en&authuser=1&user=yW7VfAgAAAAJ) · [Didier Stricker](https://scholar.google.com/citations?hl=en&authuser=1&user=ImhXfxgAAAAJ) · [Sk Aziz Ali](https://scholar.google.com/citations?hl=en&authuser=1&user=zywjMeMAAAAJ) · [Muhammad Zeshan Afzal](https://scholar.google.com/citations?user=kHMVj6oAAAAJ&hl=en&authuser=1&oi=ao)
+Related: [multimodal-cadgpt](https://github.com/Vedant-29/multimodal-cadgpt) (the app that calls this server)
 
-_*equal contributions_
+## What this fork changes
 
-<h2> NeurIPS 2024 (Spotlight 🤩) </h2>
+- `simple_text2cad.py`: a Flask server that loads the model once and serves `GET /health` and `POST /generate-cad`.
+- `Cad_VLM/config/inference_user_input.yaml`: filled in for the server (checkpoint path, default Hugging Face cache).
+- `Cad_VLM/test_user_input.py`: extra logging of the prompts and generated sequences.
+- `environment.yml`: adds `flask`.
 
-<a href="https://arxiv.org/abs/2409.17106">
-  <img src="https://img.shields.io/badge/Arxiv-3498db?style=for-the-badge&logoWidth=40&logoColor=white&labelColor=2c3e50&borderRadius=10" alt="Arxiv" />
-</a>
-<a href="https://sadilkhan.github.io/text2cad-project/">
-  <img src="https://img.shields.io/badge/Project-2ecc71?style=for-the-badge&logoWidth=40&logoColor=white&labelColor=27ae60&borderRadius=10" alt="Project" />
-</a>
-<a href="https://huggingface.co/datasets/SadilKhan/Text2CAD">
-  <img src="https://img.shields.io/badge/Dataset-7D5BA6?style=for-the-badge&logoWidth=40&logoColor=white&labelColor=27ae60&borderRadius=10" alt="Dataset" />
-</a>
+## Requirements
 
+- Linux
+- An NVIDIA GPU. The text encoder is moved to CUDA unconditionally, so CPU only does not work. The weights take about 1.5 GB (BERT-large plus a 92 MB checkpoint), so a card with 8 GB should be enough.
+- NVIDIA driver that supports CUDA 12.1
+- conda (Miniconda is fine)
+- A Hugging Face account, to download the checkpoint
 
+## Setup
 
+```sh
+git clone https://github.com/Vedant-29/text2cad.git
+cd Text2CAD
+conda env create --file environment.yml
+conda activate text2cad
 
-</div>
+# Check that PyTorch sees the GPU
+python -c "import torch; print(torch.cuda.is_available())"
 
-
-# ⚙️ Installation
-
-## 🌍 Environment
-
-- 🐧 Linux
-- 🐍 Python >=3.9
-
-## 📦 Dependencies
-
-```bash
-$ conda env create --file environment.yml
+# Only if that prints False
+pip3 uninstall torch torchvision torchaudio -y
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 ```
 
-# ✅ Todo List
+### Weights
 
-- [x] Release Data Preparation Code
-- [x] Release Training Code
-- [x] Release Inference Code
+1. Open the [SadilKhan/Text2CAD dataset](https://huggingface.co/datasets/SadilKhan/Text2CAD) on Hugging Face and accept its terms. Downloads need a token from an account that has accepted them.
+2. Create a read token at https://huggingface.co/settings/tokens.
+3. Download the checkpoint (about 92 MB) into the repo:
 
-# 📊 Data Preparation
-
-Download the DeepCAD data from [here](https://github.com/ChrisWu1997/DeepCAD?tab=readme-ov-file#data).
-
-**Generate Vector Representation from DeepCAD Json**
-
-_You can also download the processed cad vec from [here](https://huggingface.co/datasets/SadilKhan/Text2CAD/blob/main/cad_seq.zip)._
-
-```bash
-$ cd CadSeqProc
-$  python3 json2vec.py --input_dir $DEEPCAD_JSON --split_json $TRAIN_TEST_VAL_JSON --output_dir $OUTPUT_DIR --max_workers $WORKERS --padding --deduplicate
+```sh
+export HF_TOKEN=<your token>
+wget --header="Authorization: Bearer $HF_TOKEN" \
+  "https://huggingface.co/datasets/SadilKhan/Text2CAD/resolve/main/text2cad_v1.0/Text2CAD_1.0.pth"
 ```
 
+The `bert-large-uncased` text encoder (about 1.3 GB) downloads automatically from Hugging Face the first time the server starts.
 
-**Download the text annotations from [here](https://huggingface.co/datasets/SadilKhan/Text2CAD). Download the preprocessed [training](https://huggingface.co/datasets/SadilKhan/Text2CAD/blob/main/text2cad_v1.0/train_data.pkl) and [validation](https://huggingface.co/datasets/SadilKhan/Text2CAD/blob/main/text2cad_v1.0/validation_data.pkl) data and place it in** `Cad_VLM/dataprep` folder.
+## Usage
 
-# 🚀 Training
+Start the server:
 
-In the `Cad_VLM/config/trainer.yaml`, provide the following path.
-
-<details><summary>Required Updates in yaml</summary>
-<p>
-
-- `cache_dir`: The directory to load model weights from Huggingface.
-- `cad_seq_dir`: The root directory that contains the ground truth CAD vector.
-- `prompt_path`: Path for the text annotation.
-- `split_filepath`: Json file containing the UIDs for train, test or validation.
-- `log_dir`: Directory for saving _logs, outputs, checkpoints_.
-- `checkpoint_path` (Optional): For resuming training after some epochs.
-
-</p>
-</details> 
-
-<br>
-
-```bash
-$ cd Cad_VLM
-$ python3 train.py --config_path config/trainer.yaml
+```sh
+export TEXT2CAD_CHECKPOINT="$PWD/Text2CAD_1.0.pth"
+python simple_text2cad.py
 ```
 
+It listens on port 5000 on all interfaces. Check that the model loaded:
 
-# 🤖 Inference
-
-### For Test Dataset
-
-In the `Cad_VLM/config/inference.yaml`, provide the following path. Download the checkpoint for v1.0 [here](https://huggingface.co/datasets/SadilKhan/Text2CAD/blob/main/text2cad_v1.0/Text2CAD_1.0.pth).
-
-<details><summary>Required Updates in yaml</summary>
-<p>
-
-- `cache_dir`: The directory to load model weights from Huggingface.
-- `cad_seq_dir`: The root directory that contains the ground truth CAD vector.
-- `prompt_path`: Path for the text annotation.
-- `split_filepath`: Json file containing the UIDs for train, test or validation.
-- `log_dir`: Directory for saving _logs, outputs, checkpoints_.
-- `checkpoint_path`: The path to model weights. 
-
-</p>
-</details> 
-
-<br>
-
-```bash
-$ cd Cad_VLM
-$ python3 test.py --config_path config/inference.yaml
+```sh
+curl http://localhost:5000/health
 ```
 
-### Run Evaluation
+Generate a STEP file:
 
-```bash
-$ cd Evaluation
-$ python3 eval_seq.py --input_path ./output.pkl --output_dir ./output
+```sh
+curl -X POST http://localhost:5000/generate-cad \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "A rectangular prism with a hole in the middle."}' \
+  -o model.step
 ```
 
-### For Random Text Prompts
+A missing or empty `prompt` returns 400. If the model produces a sequence that cannot be turned into a solid, the server returns 500 with a JSON error.
 
-In the `Cad_VLM/config/inference_user_input.yaml`, provide the following path.
+For the original inference scripts, the Gradio demo, training, evaluation and data preparation, see [UPSTREAM_README.md](UPSTREAM_README.md). Those scripts read the paths in their YAML configs, so edit `Cad_VLM/config/*.yaml` first.
 
-<details><summary>Required Updates in yaml</summary>
-<p>
+## Environment variables
 
-- `cache_dir`: The directory to load model weights from Huggingface.
-- `log_dir`: Directory for saving _logs, outputs, checkpoints_.
-- `checkpoint_path`: The path to model weights.
-- `prompt_file` (Optional): For single prompt ignore it, for multiple prompts provide a txt file.
+| Variable | Required | What it is for | Default |
+|---|---|---|---|
+| `TEXT2CAD_CHECKPOINT` | No | Path to `Text2CAD_1.0.pth` | `test.checkpoint_path` in `Cad_VLM/config/inference_user_input.yaml` (`/workspace/Text2CAD/Text2CAD_1.0.pth`) |
+| `PORT` | No | Port the server listens on | `5000` |
+| `HF_TOKEN` | For the download only | Hugging Face read token used by the `wget` command above. The server does not read it. | None |
 
-</p>
-</details> 
-<br>
+## Notes
 
-  #### For single prompt
-  
-  ```bash
-  $ cd Cad_VLM
-  $ python3 test_user_input.py --config_path config/inference_user_input.yaml --prompt "A rectangular prism with a hole in the middle."
-  ```
+- This is research code. The server has been run on a Linux GPU pod on RunPod with CUDA 12.1, called from multimodal-cadgpt. It has not been tested on other setups.
+- The server has no authentication and binds to `0.0.0.0`. Do not expose it to the internet without something in front of it.
+- Requests are handled one at a time. Output quality is that of the upstream v1.0 checkpoint, and some prompts do not produce a valid solid.
+- No weights or data are included in this repo.
 
-  #### For Multiple prompts
+## Citation
 
-  ```bash
-  $ cd Cad_VLM
-  $ python3 test_user_input.py --config_path config/inference_user_input.yaml
-  ```
+If you use Text2CAD, cite the original paper:
 
-# 💻 Run Demo
-
-
-In the `Cad_VLM/config/inference_user_input.yaml`, provide the following path.
-
-<details><summary>Required Updates in yaml</summary>
-<p>
-
-- `cache_dir`: The directory to load model weights from Huggingface.
-- `log_dir`: Directory for saving _logs, outputs, checkpoints_.
-- `checkpoint_path`: The path to model weights.
-
-</p>
-</details> 
-<br>
-
-```bash
-$ cd App
-$ gradio app.py
-```
-
-
-
-# 👥 Contributors
-Our project owes its success to the invaluable contributions of these remarkable individuals. We extend our heartfelt gratitude for their dedication and support.
-
-
-<a href="https://scholar.google.com/citations?hl=en&authuser=1&user=QYcfOjEAAAAJ">
-  <img src="https://av.dfki.de/wp-content/uploads/avatars/162/1722545138-bpfull.png" width="50" height="50" style="border-radius: 50%;">
-</a>
-<a href="https://github.com/saali14">
-  <img src="https://github.com/saali14.png" width="50" height="50" style="border-radius: 50%;">
-</a>
-<a href="https://scholar.google.de/citations?user=yW7VfAgAAAAJ&hl=en">
-  <img src="https://scholar.google.de/citations/images/avatar_scholar_128.png" width="50" height="50" style="border-radius: 50%;">
-</a>
-
-<br>
-
-# ✍🏻 Acknowledgement
-
-We thank the authors of [DeepCAD](https://github.com/ChrisWu1997/DeepCAD) and [SkexGen](https://samxuxiang.github.io/skexgen/) and acknowledge the use of their code.
-
-# 📜 Citation
-
-If you use this dataset in your work, please consider citing the following publications.
-
-
-```
+```bibtex
 @inproceedings{text2cad,
 	author = {Khan, Mohammad Sadil and Sinha, Sankalp and Sheikh, Talha Uddin and Stricker, Didier and Ali, Sk Aziz and Afzal, Muhammad Zeshan},
 	booktitle = {Advances in Neural Information Processing Systems},
@@ -210,5 +112,8 @@ If you use this dataset in your work, please consider citing the following publi
 	bdsk-url-1 = {https://proceedings.neurips.cc/paper_files/paper/2024/file/0e5b96f97c1813bb75f6c28532c2ecc7-Paper-Conference.pdf}}
 ```
 
+## License
 
+CC BY-NC-SA 4.0, the same as upstream. See [LICENSE](LICENSE).
 
+Text2CAD was developed by DFKI (Deutsches Forschungszentrum für Künstliche Intelligenz). You may use and adapt it for non-commercial purposes only, you must credit DFKI and the paper authors, and anything you build on it must be shared under the same license. The changes in this fork are released under the same license.

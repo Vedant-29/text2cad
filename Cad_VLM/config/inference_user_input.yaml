@@ -1,13 +1,9 @@
-cache_dir: /root/.cache/huggingface
-log_dir: /workspace/Text2CAD/logs
-checkpoint_path: /workspace/Text2CAD/Text2CAD_1.0.pth
-prompt_file: null
-
 text_encoder:
   text_embedder:
     model_name: "bert_large_uncased"
     max_seq_len: 512
-    cache_dir: "/root/.cache/huggingface"
+    # null uses the default Hugging Face cache (~/.cache/huggingface or $HF_HOME)
+    cache_dir: null
   adaptive_layer:
     in_dim: 1024
     out_dim: 1024
@@ -27,6 +23,7 @@ test:
   num_workers: 30
   prefetch_factor: 10
   log_dir: "/workspace/Text2CAD/logs"
+  # simple_text2cad.py uses TEXT2CAD_CHECKPOINT instead when it is set
   checkpoint_path: "/workspace/Text2CAD/Text2CAD_1.0.pth"
   nucleus_prob: 0
   sampling_type: "max"
